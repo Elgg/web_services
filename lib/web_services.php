@@ -67,15 +67,8 @@ function execute_method($method) {
 	$function = null;
 	if (isset($API_METHODS[$method]["function"])) {
 		$function = $API_METHODS[$method]["function"];
-		// allow array version of static callback
-		if (is_array($function)
-				&& isset($function[0], $function[1])
-				&& is_string($function[0])
-				&& is_string($function[1])) {
-			$function = "{$function[0]}::{$function[1]}";
-		}
 	}
-	if (!is_string($function) || !is_callable($function)) {
+	if (!is_callable($function, true)) {
 		$msg = elgg_echo('APIException:FunctionDoesNotExist', array($method));
 		throw new APIException($msg);
 	}
@@ -92,13 +85,8 @@ function execute_method($method) {
 	// may throw exception, which is not caught here
 	verify_parameters($method, $parameters);
 
-	$serialised_parameters = serialise_parameters($method, $parameters);
-
 	// Execute function: Construct function and calling parameters
-	$serialised_parameters = trim($serialised_parameters, ", ");
-
-	// @todo remove the need for eval()
-	$result = eval("return $function($serialised_parameters);");
+	$result = call_user_func_array($function, $parameters);
 
 	// Sanity check result
 	// If this function returns an api result itself, just return it
@@ -106,14 +94,15 @@ function execute_method($method) {
 		return $result;
 	}
 
+	// @todo Why was returning false a parse error?
 	if ($result === false) {
-		$msg = elgg_echo('APIException:FunctionParseError', array($function, $serialised_parameters));
+		$msg = elgg_echo('APIException:FunctionParseError', array(print_r($function, true), print_r($parameters, true)));
 		throw new APIException($msg);
 	}
 
 	if ($result === NULL) {
 		// If no value
-		$msg = elgg_echo('APIException:FunctionNoReturn', array($function, $serialised_parameters));
+		$msg = elgg_echo('APIException:FunctionNoReturn', array($function, print_r($parameters, true)));
 		throw new APIException($msg);
 	}
 
@@ -169,7 +158,7 @@ function get_parameters_for_method($method) {
  * Get POST data
  * Since this is called through a handler, we need to manually get the post data
  *
- * @return POST data as string encoded as multipart/form-data
+ * @return string POST data as string encoded as multipart/form-data
  * @access private
  */
 function get_post_data() {
@@ -215,90 +204,6 @@ function verify_parameters($method, $parameters) {
 	}
 
 	return true;
-}
-
-/**
- * Serialize an array of parameters for an API method call
- *
- * @param string $method     API method name
- * @param array  $parameters Array of parameters
- *
- * @return string or exception
- * @throws APIException
- * @since 1.7.0
- * @access private
- */
-function serialise_parameters($method, $parameters) {
-	global $API_METHODS;
-
-	// are there any parameters for this method
-	if (!(isset($API_METHODS[$method]["parameters"]))) {
-		return ''; // if not, return
-	}
-
-	$serialised_parameters = "";
-	foreach ($API_METHODS[$method]['parameters'] as $key => $value) {
-
-		// avoid warning on parameters that are not required and not present
-		if (!isset($parameters[$key])) {
-			continue;
-		}
-
-		// Set variables casting to type.
-		switch (strtolower($value['type']))
-		{
-			case 'int':
-			case 'integer' :
-				$serialised_parameters .= "," . (int)trim($parameters[$key]);
-				break;
-			case 'bool':
-			case 'boolean':
-				// change word false to boolean false
-				if (strcasecmp(trim($parameters[$key]), "false") == 0) {
-					$serialised_parameters .= ',false';
-				} else if ($parameters[$key] == 0) {
-					$serialised_parameters .= ',false';
-				} else {
-					$serialised_parameters .= ',true';
-				}
-
-				break;
-			case 'string':
-				$serialised_parameters .= ",'" . addcslashes(trim($parameters[$key]), "'") . "'";
-				break;
-			case 'float':
-				$serialised_parameters .= "," . (float)trim($parameters[$key]);
-				break;
-			case 'array':
-				// we can handle an array of strings, maybe ints, definitely not booleans or other arrays
-				if (!is_array($parameters[$key])) {
-					$msg = elgg_echo('APIException:ParameterNotArray', array($key));
-					throw new APIException($msg);
-				}
-
-				$array = "array(";
-
-				foreach ($parameters[$key] as $k => $v) {
-					$k = sanitise_string($k);
-					$v = sanitise_string($v);
-
-					$array .= "'$k'=>'$v',";
-				}
-
-				$array = trim($array, ",");
-
-				$array .= ")";
-				$array = ",$array";
-
-				$serialised_parameters .= $array;
-				break;
-			default:
-				$msg = elgg_echo('APIException:UnrecognisedTypeCast', array($value['type'], $key, $method));
-				throw new APIException($msg);
-		}
-	}
-
-	return $serialised_parameters;
 }
 
 // API authorization handlers /////////////////////////////////////////////////////////////////////
@@ -517,10 +422,7 @@ function map_api_hash($algo) {
  * @return string The HMAC signature
  * @access private
  */
-function calculate_hmac($algo, $time, $nonce, $api_key, $secret_key,
-$get_variables, $post_hash = "") {
-
-	global $CONFIG;
+function calculate_hmac($algo, $time, $nonce, $api_key, $secret_key, $get_variables, $post_hash = "") {
 
 	elgg_log("HMAC Parts: $algo, $time, $api_key, $secret_key, $get_variables, $post_hash");
 
